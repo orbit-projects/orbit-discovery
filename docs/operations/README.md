@@ -1,35 +1,50 @@
-# Orbit Discovery: operations and security
+# Operations
 
-This guide organizes runtime behavior documented by the package. It does not certify production readiness. Verify provider/client versions, permissions, transport security, limits, and failure behavior in the target environment before release.
+`ServiceDiscovery.resolve(name)` returns candidates. The application owns endpoint selection,
+connection creation, retries, health checks, and the decision to refresh or replace a candidate.
+The contract does not say that an endpoint is reachable, healthy, or still registered when used.
 
-## Configuration surface
+## Static development resolver
 
-Environment names found in the package README:
+`StaticServiceDiscovery` is an immutable bounded map intended for deterministic development and
+tests. It performs no DNS lookup, registration refresh, health probe, or load balancing. Configure
+it from trusted application settings, and close it with `aclose()` or its async context manager.
+Unknown service names return an empty tuple. Invalid names fail validation.
 
-The package README does not name `ORBIT_*` variables. Use its typed constructors and application configuration, and confirm exact runtime inputs in the implementation before deployment.
+## Provider adapters
 
-Use the package README's constructor and deployment examples. Store credentials in a secret manager and avoid logging credentials, raw provider errors, request data, or opaque cursors.
+A live provider adapter should define its source of truth, update/refresh behavior, staleness,
+consistency, timeouts, retry/backoff rules, health semantics, and lifecycle. It must bound returned
+instance counts and metadata and translate expected provider failures to `DiscoveryError` without
+including credentials or raw provider responses. Propagate `asyncio.CancelledError` unchanged.
 
-## Lifecycle, failure behavior, and limits
+Register the selected implementation in the application's Core dependency container under
+`DISCOVERY_DEPENDENCY_KEY` when using Core integration. Do not rely on implicit provider discovery
+or install multiple competing implementations under the same key.
 
-`orbit-discovery` defines a provider-neutral async contract for finding remote service instances.
-It is separate from Core's local service registry, which manages components inside one application.
-This package has no provider SDK or network dependency; it supports Python 3.11 through 3.14 and is
-pre-alpha.
+## Process providers
 
-```bash
-python -m pip install orbit-discovery
-```
+Install `orbit-discovery[process]` to use `ProcessServiceDiscovery` with a Core-supervised process
+host. The bridge uses the versioned `orbit.discovery.v1.ServiceDiscovery/Resolve` method and
+enforces a per-call request deadline. Core owns process startup, configuration, authentication,
+health, and process shutdown. Close the bridge before its process host; the bridge does not close
+the host. The documented local process protocol is for trusted local plugins and does not sandbox
+provider code.
 
-## Provider and request behavior
+The protobuf response is validated into bounded `ServiceInstance` objects. Invalid fields or
+provider errors fail the resolution instead of returning partially trusted endpoint data.
 
-The static implementation does not perform DNS lookups, health checks, load balancing, caching,
-watching, or network requests. It returns candidates; the caller owns selection and connection
-policy. The package includes no Consul, Kubernetes, DNS, or cloud registry adapter. Future adapters
-must own their SDK, credentials, transport, refresh and shutdown behavior, and provider-specific
-failures while implementing the same contract. Validate resolved endpoints against application
-egress policy before making outbound requests; discovery data alone is not an SSRF defense.
+## Endpoint selection and egress
 
-## Production validation
+Do not connect to a resolved host solely because discovery returned it. Apply application egress
+policy, allowed scheme/port rules, destination network restrictions, and any DNS resolution policy
+before making outbound requests. Re-check policy after DNS resolution and redirects where
+appropriate; discovery data is not an SSRF defense. A weight is provider metadata for the caller's
+selection algorithm and the capability does not prescribe weighted round robin.
 
-Validate startup/shutdown cleanup, timeout and cancellation behavior, concurrency and payload bounds where applicable, secret rotation and least-privilege access, data durability, backup/restore, and failover against the selected provider. Do not infer distributed or durable guarantees from an in-process API or fake-client tests.
+## Validation before rollout
+
+Test empty results, duplicate IDs, stale registrations, provider outages, timeout and cancellation,
+host normalization, DNS changes, endpoint policy rejection, connection retry behavior, and
+shutdown ordering. Use non-production provider scopes and credentials. Static map and fake-process
+tests do not establish live registry or network behavior.

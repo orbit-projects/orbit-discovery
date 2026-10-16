@@ -3,7 +3,7 @@
 `orbit-discovery` defines a provider-neutral async contract for finding remote service instances.
 It is separate from Core's local service registry, which manages components inside one application.
 This package has no provider SDK or network dependency; it supports Python 3.11 through 3.14 and is
-pre-alpha.
+alpha.
 
 ```bash
 python -m pip install orbit-discovery

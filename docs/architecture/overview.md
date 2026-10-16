@@ -1,47 +1,54 @@
-# Orbit Discovery: architecture and boundaries
+# Architecture
 
-## Responsibility
+## Contract boundary
 
-`orbit-discovery` defines a provider-neutral async contract for finding remote service instances.
-It is separate from Core's local service registry, which manages components inside one application.
-This package has no provider SDK or network dependency; it supports Python 3.11 through 3.14 and is
-pre-alpha.
+`orbit-discovery` resolves remote service names into immutable endpoint candidates. It is distinct
+from Core's local service registry, which manages components inside one process. The capability
+defines validated `ServiceInstance` values and the async `ServiceDiscovery` protocol; it does not
+choose an endpoint, open a socket, check health, balance traffic, or manage retry policy.
 
-```bash
-python -m pip install orbit-discovery
+```text
+application / caller → ServiceDiscovery.resolve(name) → endpoint candidates
+       │                         ├── static map for tests/local configuration
+       │                         ├── provider adapter with its own SDK and lifecycle
+       │                         └── ProcessServiceDiscovery bridge
+       │                                      └── Core owns and supervises plugin process
+       └── validates egress policy, chooses endpoint, connects and retries
 ```
 
-## Declared dependencies
+`DISCOVERY_DEPENDENCY_KEY` is the Core container registration key for an application-selected
+provider. The capability has no Core import or runtime dependency. The optional `process` extra
+uses Core's supervised process host but does not start a process itself.
 
-The following dependency declarations come from the checked-in manifests. Optional groups and development dependencies are called out separately.
+## Endpoint values
 
-### `pyproject.toml`
-- No dependencies declared.
-- Optional `process` group: `orbit-core[process-plugins]>=0.1.0a1,<0.2`, `protobuf>=7.35.1,<8`.
-- Optional `dev` group: `pytest>=8,<10`, `pytest-asyncio>=0.24,<2`, `ruff>=0.8,<1`, `mypy>=1.13,<2`.
+`ServiceInstance` has a bounded ASCII service name and instance ID, a normalized DNS hostname or IP
+literal, an HTTP(S) scheme, a valid port, a bounded weight, and a copied read-only metadata map.
+IPv6 literals are bracketed in the `authority` and `base_url` properties. Metadata and host values
+are omitted from normal representations. Metadata is for bounded non-secret labels, not credentials
+or bearer tokens.
 
-Declared dependencies do not mean that optional providers or services are bundled with this package.
+The map and returned tuples are immutable snapshots. DNS names are IDNA-normalized and lowercased;
+IP addresses use canonical compressed form. `StaticServiceDiscovery` validates a bounded map once
+at construction and returns the configured candidates as-is. It does not detect duplicate IPs,
+refresh registrations, or remove unhealthy endpoints.
 
-## Implementation layout
+## Process contract
 
-Representative implementation files in this checkout:
+`proto/orbit_discovery/v1/service_discovery.proto` defines the versioned `Resolve` RPC and endpoint
+fields shared with language-specific process plugins. Generated Python bindings are checked into
+this package; `orbit-discovery-go` supplies Go bindings and provider SDK support separately.
+`ProcessServiceDiscovery` converts a validated service name to a protobuf request, delegates to
+Core's process invoker with a bounded deadline, and validates every returned endpoint through the
+same `ServiceInstance` constructor.
 
-- `src/orbit_discovery/__init__.py`
-- `src/orbit_discovery/discovery.py`
-- `src/orbit_discovery/process.py`
-- `src/orbit_discovery/v1/service_discovery_pb2.py`
+Core owns process launch, configuration, one-use authentication, health, and process shutdown. The
+bridge closes only its own acceptance of new calls. Shut down the bridge before the Core process
+host, and follow the process-host documentation for the trusted local transport boundary.
 
-## Public contract and scope
+## Extension boundaries
 
-## Provider and request behavior
-
-The static implementation does not perform DNS lookups, health checks, load balancing, caching,
-watching, or network requests. It returns candidates; the caller owns selection and connection
-policy. The package includes no Consul, Kubernetes, DNS, or cloud registry adapter. Future adapters
-must own their SDK, credentials, transport, refresh and shutdown behavior, and provider-specific
-failures while implementing the same contract. Validate resolved endpoints against application
-egress policy before making outbound requests; discovery data alone is not an SSRF defense.
-
-## Boundary rules
-
-Keep provider SDKs, credentials, transports, and provider-specific error translation in provider adapters. Keep reusable capability contracts in the matching capability package and lifecycle orchestration in Core. Apply the relevant layer for this repository and preserve the dependency direction shown above.
+Provider adapters own registration sources, SDKs, credentials, watch/refresh loops, transport,
+timeouts, errors, and client cleanup. Applications own endpoint selection, egress restrictions,
+connection pools, health checks, and retries. No Consul, DNS, Kubernetes, or cloud adapter is
+included in this Python checkout.
